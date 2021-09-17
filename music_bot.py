@@ -4,7 +4,7 @@ import discord
 
 from discord.ext import commands
 #Files used in this program
-from YTDLSource import YTDLSource
+from YTDLSource import YTDLError, YTDLSource
 from VoiceState import VoiceState
 from song import Song
 
@@ -39,9 +39,7 @@ class MusicBot(commands.Cog):
 
     @commands.command(pass_context = True, aliases = ['summon'])
     async def join(self, ctx: commands.Context):
-
         destination = ctx.author.voice.channel
-
         if ctx.voice_state.voice:
             await ctx.voice_state.voice.move_to(destination)
             return
@@ -51,56 +49,58 @@ class MusicBot(commands.Cog):
     @commands.command(pass_context = True, aliases = ['disconnect'])
     async def leave(self, ctx : commands.Context):
         if not ctx.voice_state.voice:
-            return await ctx.send("Not connected to any voice channel.")
+            return await ctx.send('Not connected to any voice channel.')
 
         await ctx.voice_state.stop()
-        #del self.voice_states[ctx.guild.id]
+        del self.voice_states[ctx.guild.id]
         await ctx.send("Later, losers.")
 
     @commands.command(pass_context = True)
     async def volume(self, ctx : commands.Context, *, volume: int):
         if not ctx.voice_state.is_playing:
-            return await ctx.send('Nothing is being played.')
+            return await ctx.send('Nothing being played at the moment.')
 
         if 0 > volume > 100:
-            return await ctx.send("Volume must be between 0 and 100. Nice try though")
-        
+            return await ctx.send('Volume must be between 0 and 100')
+
         ctx.voice_state.volume = volume / 100
-        await ctx.send("Volume set to {}%".format(volume))
+        await ctx.send('Volume of the player set to {}%'.format(volume))
 
     @commands.command(pass_context = True, aliases = ['now'])
     async def current(self, ctx : commands.Context):
-        current_song = ctx.voice_state.current
-        embed = discord.Embed()
-        embed.title = current_song.title
-        embed.url = current_song.url
-        embed.color = 3553598
-        embed.set_thumbnail(url = current_song.thumbnail)
-        embed.set_author(name = "Added to Queue", icon_url = current_song.requester.avatar_url)
-        embed.add_field(inline = True, name = "Channel", value = current_song.uploader)
-        embed.add_field(inline = True, name = "Duration", value = current_song.duration)
-        
-        await ctx.send(embed = embed)
+        if ctx.voice_state.is_playing:
+            current_song = ctx.voice_state.current
+            embed = discord.Embed()
+            embed.title = current_song.title
+            embed.url = current_song.url
+            embed.color = 3553598
+            embed.set_thumbnail(url = current_song.thumbnail)
+            embed.set_author(name = "Currently Playing", icon_url = current_song.requester.avatar_url)
+            embed.add_field(inline = True, name = "Channel", value = current_song.uploader)
+            embed.add_field(inline = True, name = "Duration", value = current_song.duration)
+            await ctx.send(embed = embed)
+        else:
+            await ctx.send("Nothing is playing!")
 
     @commands.command(pass_context = True, aliases = ['ps'])
     async def pause(self, ctx : commands.Context):
-        if not ctx.voice_state.is_playing and ctx.voice_state.voice.is_playing():
+        if ctx.voice_state.is_playing and ctx.voice_state.voice.is_playing():
             ctx.voice_state.voice.pause()
-            await ctx.message.add_reaction("⏯")
-
+            await ctx.message.add_reaction('⏯')
     @commands.command(pass_context = True, aliases = ['continue'])
     async def resume(self, ctx : commands.Context):
-        if not ctx.voice_state.is_playing and ctx.voice_state.voice.is_paused():
+        if ctx.voice_state.is_playing and ctx.voice_state.voice.is_paused():
             ctx.voice_state.voice.resume()
-            await ctx.message.add_reaction("⏯")
+            await ctx.message.add_reaction('⏯')
+
 
     @commands.command(pass_context = True)
     async def stop(self, ctx : commands.Context):
         ctx.voice_state.songs.clear()
 
-        if not ctx.voice_state.is_playing:
+        if ctx.voice_state.is_playing:
             ctx.voice_state.voice.stop()
-            await ctx.message.add_reaction("⏹")
+            await ctx.message.add_reaction('⏹')
 
     @commands.command(pass_context = True, aliases = ['s'])
     async def skip(self, ctx : commands.Context):
@@ -116,7 +116,10 @@ class MusicBot(commands.Cog):
             ctx.voice_state.skip_votes.add(voter.id)
             total_votes = len(ctx.voice_state.skip_votes)
 
-            if total_votes >= 3: # figure out how i want the minimum number of votes to scale with number of people
+            if total_votes >= 3:
+                await ctx.message.add_reaction('⏭')
+                ctx.voice_state.skip()
+            else:
                 await ctx.send(f"{voter.name} wants to rock the vote! Need {3 - len(ctx.voice_state.skip_votes)} left to skip the song.")
 
         else:
@@ -124,6 +127,8 @@ class MusicBot(commands.Cog):
 
     @commands.command(pass_context = True, aliases = ['q'])
     async def queue(self, ctx : commands.Context, *, page : int = 1):
+        if ctx.voice_state.is_playing:
+            return await ctx.send(f"The only song in the queue is the current song: {ctx.voice_state.current.title}")
         if len(ctx.voice_state.songs) == 0:
             return await ctx.send("Queue is empty!")
 
@@ -159,25 +164,48 @@ class MusicBot(commands.Cog):
     @commands.command(pass_context = True, aliases = ['l'])
     async def loop(self, ctx: commands.Context):
         if not ctx.voice_state.is_playing:
-            return await ctx.send("Nothing is playing.")
+            return await ctx.send('Nothing being played at the moment.')
 
+        # Inverse boolean value to loop and unloop.
         ctx.voice_state.loop = not ctx.voice_state.loop
-        await ctx.message.add_reaction("✅")
+        await ctx.message.add_reaction('✅')
 
     @commands.command(pass_context = True, aliases = ['p'])
     async def play(self, ctx : commands.Context, * , search : str):
-        if not ctx.voice_state.voice:
-            await ctx.invoke(self.join)
-
         async with ctx.typing():
             try:
-                source = await YTDLSource.create_source(ctx, search, loop = self.client.loop)
-            except YTDLSource.YTDLError as e:
-                await ctx.send(f"An error: {e}. Let shokie#0104 know!")
+                source = await YTDLSource.create_source(ctx, search, loop=self.client.loop)
+            except YTDLError as e:
+                await ctx.send('An error occurred while processing this request: {}'.format(str(e)))
             else:
+                if not ctx.voice_state.voice:
+                    await ctx.invoke(self.join)
+
                 song = Song(source)
                 await ctx.voice_state.songs.put(song)
-                await ctx.send(f"Queued up {str(source)}!")
+                await ctx.send('Enqueued {}'.format(str(source)))
+
+    @commands.command(pass_context = True)
+    async def search(self, ctx : commands.Context, *, search : str):
+        async with ctx.typing():
+            try:
+                source = await YTDLSource.search_source(self.client, ctx, search, loop=self.client.loop)
+            except YTDLError as e:
+                await ctx.send('An error occurred while processing this request: {}'.format(str(e)))
+            else:
+                if source == 'sel_invalid':
+                    await ctx.send('Invalid selection.')
+                elif source == 'cancel':
+                    await ctx.send(':white_check_mark:')
+                elif source == 'timeout':
+                    await ctx.send(':alarm_clock: **Time\'s up!**')
+                else:
+                    if not ctx.voice_state.voice:
+                        await ctx.invoke(self.join)
+
+                    song = Song(source)
+                    await ctx.voice_state.songs.put(song)
+                    await ctx.send('Enqueued {}'.format(str(source)))
 
     @join.before_invoke
     @play.before_invoke

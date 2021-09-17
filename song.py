@@ -1,5 +1,4 @@
 import YTDLSource
-import time
 
 class Song:
     __slots__ = ('source')

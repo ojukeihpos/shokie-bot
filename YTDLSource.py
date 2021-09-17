@@ -8,6 +8,7 @@ from discord.ext import commands
 class YTDLError(Exception):
     pass
 
+
 class YTDLSource(discord.PCMVolumeTransformer):
     YTDL_OPTIONS = {
         'format': 'bestaudio/best',
@@ -21,7 +22,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
         'logtostderr': False,
         'quiet': True,
         'no_warnings': True,
-        'default_search': 'auto',
+        'default_search': 'ytsearch',
         'source_address': '0.0.0.0',
         'cookiefile': 'cookies.txt'
     }
@@ -96,37 +97,90 @@ class YTDLSource(discord.PCMVolumeTransformer):
                     info = processed_info['entries'].pop(0)
                 except IndexError:
                     raise YTDLError('Couldn\'t retrieve any matches for `{}`'.format(webpage_url))
-
+        
         return cls(ctx, discord.FFmpegPCMAudio(info['url'], **cls.FFMPEG_OPTIONS), data=info)
+
+    @classmethod
+    async def search_source(cls, client : commands.Bot, ctx: commands.Context, search: str, *, loop: asyncio.BaseEventLoop = None):
+        channel = ctx.channel
+        loop = loop or asyncio.get_event_loop()
+
+        cls.search_query = '%s%s:%s' % ('ytsearch', 10, ''.join(search))
+
+        partial = functools.partial(cls.ytdl.extract_info, cls.search_query, download=False, process=False)
+        info = await loop.run_in_executor(None, partial)
+
+        cls.search = {}
+        cls.search["title"] = f'Search results for:\n**{search}**'
+        cls.search["type"] = 'rich'
+        cls.search["color"] = 7506394
+        cls.search["author"] = {'name': f'{ctx.author.name}', 'url': f'{ctx.author.avatar_url}', 'icon_url': f'{ctx.author.avatar_url}'}
+        
+        lst = []
+        iterable_lst = []
+        i = 0
+        for e in info['entries']:
+            #
+            VId = e.get('id')
+            VUrl = 'https://www.youtube.com/watch?v=%s' % (VId)
+            lst.append(f'`{i + 1}.` {e.get("title")} **[{YTDLSource.parse_duration(int(e.get("duration")))}]**\n')
+            iterable_lst.append((i + 1, e.get("title"), VUrl))
+            i += 1
+
+        lst.append('\n**Type a number to make a choice, Type `cancel` to exit**')
+        cls.search["description"] = "\n".join(lst)
+
+        em = discord.Embed.from_dict(cls.search)
+        await ctx.send(embed=em, delete_after=45.0)
+
+        def check(msg):
+            return msg.content.isdigit() == True and msg.channel == channel or msg.content == 'cancel' or msg.content == 'Cancel'
+        
+        try:
+            m = await client.wait_for('message', check=check, timeout=45.0)
+
+        except asyncio.TimeoutError:
+            rtrn = 'timeout'
+
+        else:
+            if m.content.isdigit() == True:
+                sel = int(m.content)
+                if 0 < sel <= 10:
+                    for key, title, link in iterable_lst:
+                        if key == sel:
+                            VUrl = link
+                            partial = functools.partial(cls.ytdl.extract_info, VUrl, download=False)
+                            data = await loop.run_in_executor(None, partial)
+                    rtrn = cls(ctx, discord.FFmpegPCMAudio(data['url'], **cls.FFMPEG_OPTIONS), data=data)
+                else:
+                    rtrn = 'sel_invalid'
+            elif m.content == 'cancel':
+                rtrn = 'cancel'
+            else:
+                rtrn = 'sel_invalid'
+        
+        return rtrn
 
     @staticmethod
     def parse_duration(duration: int):
-        minutes, seconds = divmod(duration, 60)
-        hours, minutes = divmod(minutes, 60)
-        days, hours = divmod(hours, 24)
+        if duration > 0:
+            minutes, seconds = divmod(duration, 60)
+            hours, minutes = divmod(minutes, 60)
+            days, hours = divmod(hours, 24)
 
-        duration = []
-        if days > 0:
-            duration.append('{} days'.format(days))
-        if hours > 0:
-            duration.append('{} hours'.format(hours))
-        if minutes > 0:
-            duration.append('{} minutes'.format(minutes))
-        if seconds > 0:
-            duration.append('{} seconds'.format(seconds))
-
-        return ', '.join(duration)
-
-    @staticmethod
-    def parse_timeline(current_s : int, duration: int):
-        pointer = "🔘"
-        rest = "="
-        timeratio = current_s/duration
-        pointer_loc = int(timeratio*30)
-        tl = ""
-        for x in range (0, 31):
-            if x == pointer_loc:
-                tl += pointer
-            else:
-                tl += rest
-        return tl
+            duration = []
+            if days > 0:
+                duration.append('{:02d}'.format(days))
+            if hours > 0:
+                duration.append('{:02d}'.format(hours))
+            if minutes > 0:
+                duration.append('{:02d}'.format(minutes))
+            if seconds > 0:
+                duration.append('{:02d}'.format(seconds))
+            
+            value = ':'.join(duration)
+        
+        elif duration == 0:
+            value = "LIVE"
+        
+        return value
