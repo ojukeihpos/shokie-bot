@@ -20,4 +20,9 @@ async def on_ready():
     print(f'Logged in as {bot.user} (ID: {bot.user.id})')
     print('------')
 
+@bot.event
+async def on_disconnect():
+    print(f"Logging out")
+    return
+
 bot.run(TOKEN)

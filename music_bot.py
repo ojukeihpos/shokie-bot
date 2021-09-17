@@ -1,341 +1,195 @@
-import sys
-import time
-import traceback
+import math
+
 import discord
 
 from discord.ext import commands
-import asyncio
-from discord.player import FFmpegPCMAudio
-from discord.utils import get
-import youtube_dl as ytdl
-from youtube_dl import YoutubeDL
 #Files used in this program
+from YTDLSource import YTDLSource
+from VoiceState import VoiceState
 from song import Song
-from voice_client import VoiceClient
-
-def __init__(self, client):
-    self.client = client
-
-def hh_mm_ss(time_in_seconds):
-    min, sec = divmod(time_in_seconds, 60)
-    hour = 0
-    if min > 60:
-        hour, min = divmod(min, 60)
-    return (hour, min, sec)
-
-def timeline(current_s, complete_s):
-    pointer = "🔘"
-    rest = "="
-    timeratio = current_s/complete_s
-    pointer_loc = int(timeratio*30)
-    tl = ""
-    for x in range (0, 31):
-        if x == pointer_loc:
-            tl += pointer
-        else:
-            tl += rest
-    return tl
-
-def double_dig(digit):
-    if digit < 10:
-        return "0" + str(digit)
-    else:
-        return str(digit)
-
-def emb(desc):
-    embed = discord.Embed()
-    embed.color = 3553598
-    embed.description = desc
-    return embed
-
-def validate_time(time_string):
-    time_string = time_string.strip()
-    count_colon = 0
-    all_dig_except_colon = True
-    for x in time_string:
-        if x == ':':
-            count_colon += 1
-        elif not x.isdigit():
-            all_dig_except_colon = False
-    if all_dig_except_colon == False:
-        return (False, "NOT_ALL_DIGITS")
-    if not (count_colon > 0 and count_colon < 3):
-        return (False, "COLONS_DONT_MATCH")
-    splitted_time = time_string.split(':')
-    time_dig = []
-    for d in splitted_time:
-        time_dig.append(int(d))
-    proper_time = True
-    for x in time_dig:
-        if x >= 60:
-            proper_time = False
-    if proper_time == False:
-        return (False, "TIME_IMPROPER")
-    return (True, tuple(time_dig))
 
 class MusicBot(commands.Cog):
-    def __init__(self, client):
+    def __init__(self, client : commands.Bot):
         self.client = client
-        self.voice_clients = {}
+        self.voice_states = {}
         self.client.remove_command('help')
 
-    async def on_command_error(self, error: Exception, ctx: commands.Context):
-        if hasattr(ctx.command, 'on_error'):
-            return
-        ignored = (commands.UserInputError)
-        error = getattr(error, 'original', error)
-        
-        if isinstance(error, ignored):
-            return
-        
-        elif isinstance(error, commands.CommandNotFound):
-            await ctx.send(embed=emb("**Not a valid command. Use `$help` if you need help regarding commands.**"))
-    
-    async def disconnect_save_bandwidth_task(self):
-        await self.client.wait_until_ready()
-        while True:
-            for v in self.voice_clients.keys():
-                flag = self.voice_clients[v].should_disconnect
-                if flag:
-                    await self.voice_clients[v].disconnect()
-                    del self.voice_clients[v]
-                    break
-            await asyncio.sleep(2)
+    def get_voice_state(self, ctx : commands.Context):
+        state = self.voice_states.get(ctx.guild.id)
+        if not state:
+            state = VoiceState(self.client, ctx)
+            self.voice_states[ctx.guild.id] = state
 
-    async def server_count_sync(self):
-        await self.client.wait_until_ready()
-        while True:
-            server_ids = []
-            for s in self.client.guilds:
-                server_ids.append(s.id)
-            for vc_key in self.voice_clients.keys():
-                if vc_key not in server_ids:
-                    await self.voice_clients[vc_key].disconnect()
-                    del self.voice_clients[vc_key]
-                    break
-            await asyncio.sleep(1)
+        return state
 
-    def channel_check(self, ch1, ch2):
-        if ch1 is ch2:
-            return (True, None)
-        else:
-            return (False, ch1.id)
+    def cog_unload(self):
+        for state in self.voice_states.values():
+            self.client.loop.create_task(state.stop())
 
-    async def author_needs_to_be_in_same_vc(self, ctx, vc1, vc2):
-        if vc1 is vc2:
-            return
-        else:
-            await ctx.send(embed = emb("**You must be in the same voice channel as me to use this command.**"))
-            return False
+    def cog_check(self, ctx : commands.Context):
+        if not ctx.guild:
+            raise commands.NoPrivateMessage("This command can\'t be used in DMs.")
+        return True
 
-    async def server_specific_command(self, ctx):
-        """To inform user that this command is server specific"""
-        if ctx.message.guild is None:
-            # Private message
-            await ctx.send(embed = emb("**This command can only be called from a Server!** :poop:"))
-            return False
-        else:
+    async def cog_before_invoke(self, ctx : commands.Context):
+        ctx.voice_state = self.get_voice_state(ctx)
+
+    async def cog_command_error(self, ctx : commands.Context, error : commands.CommandError):
+        await ctx.send("An error occurred: {}.".format(str(error)))
+
+    @commands.command(pass_context = True, aliases = ['summon'])
+    async def join(self, ctx: commands.Context):
+
+        destination = ctx.author.voice.channel
+
+        if ctx.voice_state.voice:
+            await ctx.voice_state.voice.move_to(destination)
             return
 
-    # THIS WORKS FOR NOW I'M GOING TO CHANGE IT LATER
-    @commands.command(pass_context = True, aliases = ['summon, appear'])
-    async def join (self, ctx):
-        """Joins the voice channel user is in."""
-        x = await self.server_specific_command(ctx)
-        if not x is None:
-            # Means called from private msg
-            return
-        try:
-            if(not ctx.message.guild.id in self.voice_clients.keys()):
-                #There is no voice client of the server
+        ctx.voice_state.voice = await destination.connect()
 
-                chid = self.get_channel_zipperjson(ctx.message.guild.id)
-                if chid is None:
-                    chid = ctx.message.channel.id
-                ch = self.client.get_channel(chid)
-                if ch is None:
-                    # The channel no longer exists
-                    pass
-                else:
-                    # Channel check
-                    aa = self.channel_check(ch, ctx.message.channel)
-                    if aa[0] == False:
-                        await ctx.send(embed = emb("**Restricted to commands only in** <#{}>.:fox:".format(aa[1])))
-                        return
+    @commands.command(pass_context = True, aliases = ['disconnect'])
+    async def leave(self, ctx : commands.Context):
+        if not ctx.voice_state.voice:
+            return await ctx.send("Not connected to any voice channel.")
 
-                #Joining the voice channel author is in
-                await ctx.author.voice.channel.connect()
-                #Informing about the join
-                await ctx.send(embed = emb("**Joined** `{}` :mega:".format(ctx.message.author.voice.channel.name)))
-                #Storing the voice_client
-                thisvc = ctx.author.voice.channel
-                #Adding the VoiceClient class with voice_client to self.voice_clients with the server id as key
-                self.voice_clients[ctx.message.guild.id] = VoiceClient(thisvc, self.client, ctx.message.guild.id, ctx.author.voice.channel, ctx)
-            else:
-                #There is a voice client of the server
-
-                #Informing about the voice channel name in which the voice client is in
-                await ctx.send(embed = emb("**I am already playing in** `{}` :metal:".format(self.voice_clients[ctx.message.guild.id].vc.channel.name)))
-
-        except discord.errors.InvalidArgument:
-            #The user is not in any voice channel
-            await ctx.send(embed = emb("<@{}>, **you are supposed to be in a voice channel before asking me in.** :baby_chick:".format(ctx.message.author.id)))
-
-    @commands.command(pass_context = True, aliases = ['disconnect, begone'])
-    async def leave (self, ctx):
-        """Leaves the voice channel of the server"""
-
-        x = await self.server_specific_command(ctx)
-        if not x is None:
-            # Means called from private msg
-            return
-        if(ctx.message.guild.id in self.voice_clients.keys()):
-            #VoiceClient present
-
-            # # Channel check
-            # aa = self.channel_check(self.voice_clients[ctx.message.guild.id].channel, ctx.message.channel)
-            # if aa[0] == False:
-            #     await ctx.send(embed = emb("**Restricted to commands only in** <#{}>.:fox:".format(aa[1])))
-            #     return
-
-            x = await self.author_needs_to_be_in_same_vc(ctx, ctx.message.author.voice.channel, self.voice_clients[ctx.message.guild.id].vc)
-            if x is not None:
-                return
-            #Disconnecting Voice Client
-            await self.voice_clients[ctx.message.guild.id].disconnect()
-
-            #Delete voice client from self.voice_clients
-            del self.voice_clients[ctx.message.guild.id]
-
-            #Inform user
-            await ctx.send(embed = emb("**Successfully disconnected**! :art:"))
-
-        else:
-            #VoiceClient not present
-
-            #Inform user
-            await ctx.send(embed = emb("**I am not connected!** :last_quarter_moon_with_face:"))
-
-    def get_channel_zipperjson(self, sid):
-        import json
-        with open("zipper.json", "r") as z:
-            try:
-                zipp = json.load(z)
-            except json.decoder.JSONDecodeError:
-                zipp = {}
-        if sid in zipp.keys():
-            return zipp[sid]
-        else: return
-
-    @commands.command(pass_context = True, aliases = ['p'])
-    async def play (self, ctx, *songname):
-        x = await self.author_needs_to_be_in_same_vc(ctx, ctx.message.author.voice.channel, self.voice_clients[ctx.message.guild.id].channel)
-        if x is not None:
-            return
-        if len(songname) == 0:
-            if self.voice_clients[ctx.message.guild.id].is_playing() and self.voice_clients[ctx.message.guild.id].is_paused == True:
-                # paused
-                self.voice_clients[ctx.message.guild.id].resume()
-                await ctx.send(embed = emb("**Player resumed**! :arrow_forward:"))
-                return
-            else:
-                await ctx.send(embed = emb(":x: **Mention the song to play!**"))
-                return
-
-        if self.voice_clients[ctx.message.guild.id].current_song_obj is None and self.voice_clients[ctx.message.guild.id].is_queue_empty() and self.voice_clients[ctx.message.guild.id].first_song_getting_added != True:
-            self.voice_clients[ctx.message.guild.id].first_song_getting_added = True
-        
-        url = False
-        if len(songname) == 1 and (songname[0].startswith("https://www.youtube.com/watch?v=") or songname[0].startswith("www.youtube.com/watch?v=") or songname[0].startswith("https://youtu.be/")):
-            url = True
-            songname = songname[0]
-        else:
-            songname = ' '.join(songname)
-        
-        def get_song_info(url):
-            if url == False:
-                ytdl_options = {
-                    'default_search' : 'auto',
-                    'quiet' : True
-                }
-                with ytdl.YoutubeDL(ytdl_options) as ydl:
-                    info_dict = ydl.extract_info(songname, download=False)
-                    return info_dict
-            else:
-                ytdl_options = {
-                    'quiet' : True
-                }
-                with ytdl.YoutubeDL(ytdl_options) as ydl:
-                    info_dict = ydl.extract_info(songname, download=False)
-                    return info_dict
-
-        try:
-            #Searching prompt
-            await ctx.send("**Searching** `{}` :mag_right:".format(songname))
-            #Typing
-            async with ctx.typing():
-                #Actually searching, prone of error if song not found.
-                songinfo = await self.client.loop.run_in_executor(None, get_song_info, url)
-                if songinfo['is_live'] is not None:
-                # The song is a live telecast
-                    await ctx.send(embed = emb("**Melody is under development for live playback.**"))
-                    return
-                # Creating the Song object
-                song_object = Song(songname, ctx.message.author, songinfo)
-                # Adding the Song object to current server's queue
-                if self.voice_clients[ctx.message.guild.id].first_song_getting_added != True:
-                    await asyncio.sleep(5)
-                pos = self.voice_clients[ctx.message.guild.id].add_song_to_queue(song_object)
-                if pos == 1 and self.voice_clients[ctx.message.guild.id].current_song_obj is None:
-                    # This is the first song added to queue
-                    await ctx.send("**Playing** :notes: `{}` **- Now!**".format(songinfo['title'].strip().title()))
-                else:
-                    # Creating added to queue embed
-                    embed = discord.Embed()
-                    embed.title = songinfo['title'].strip().title()
-                    embed.url = songinfo['webpage_url']
-                    embed.color = 12345678
-                    embed.set_thumbnail(url = songinfo['thumbnail'])
-                    embed.set_author(name = "Added to Queue", icon_url = ctx.message.author.avatar_url)
-                    embed.add_field(inline = True, name = "Channel", value = songinfo['uploader'].strip().title())
-                    hms = await self.client.loop.run_in_executor(None, hh_mm_ss, songinfo['duration'])
-                    hms_tuple = ("" if hms[0]==0 else (str(hms[0]) + "h "), "" if hms[1]==0 else (str(hms[1]) + "m "), "" if hms[2]==0 else (str(hms[2]) + "s "))
-                    embed.add_field(inline = True, name = "Duration", value = "{}{}{}".format(hms_tuple[0], hms_tuple[1], hms_tuple[2]))
-                    embed.add_field(inline = True, name = "Position in Queue", value = str(pos))
-                    if self.voice_clients[ctx.message.guild.id].current_song_obj is None:
-                        await asyncio.sleep(5)
-                        eta = self.voice_clients[ctx.message.guild.id].eta(len(self.voice_clients[ctx.message.guild.id].queue)-1)
-                        hms = await self.client.loop.run_in_executor(None, hh_mm_ss, eta)
-                        hms_tuple = ("" if hms[0]==0 else (str(hms[0]) + "h "), "" if hms[1]==0 else (str(hms[1]) + "m "), "" if hms[2]==0 else (str(hms[2]) + "s "))
-                        embed.add_field(inline = True, name = "ETA until playing", value = "{}{}{}".format(hms_tuple[0], hms_tuple[1], hms_tuple[2]))
-                        # Sending the Embed
-                        await ctx.send(embed = embed)
-                        ytdl_format_options = {
-                            'format': 'bestaudio/best',
-                            'restrictfilenames': True,
-                            'noplaylist': True,
-                            'nocheckcertificate': True,
-                            'ignoreerrors': False,
-                            'logtostderr': False,
-                            'quiet': True,
-                            'no_warnings': True,
-                            'default_search': 'auto',
-                            'source_address': '0.0.0.0', # bind to ipv4 since ipv6 addresses cause issues sometimes
-                        }
-                        FFMPEG_OPTIONS = {'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5', 'options': '-vn'}
-                        voice = get(self.client.voice_clients, guild=ctx.guild)
-                        with YoutubeDL(ytdl_format_options) as ydl:
-                                info = ydl.extract_info(url, download=False)
-                                voice.play(FFmpegPCMAudio(info['formats'][0]['url'], **FFMPEG_OPTIONS))
-                                voice.is_playing()
-                                print("Playing {}".format(self.current_song_obj.songinfo['title'].strip().title()))
-        except ytdl.utils.DownloadError:
-            # No search results
-            await self.client.send_message(ctx.message.channel , embed = emb(":x: **No results!**"))
-
+        await ctx.voice_state.stop()
+        #del self.voice_states[ctx.guild.id]
+        await ctx.send("Later, losers.")
 
     @commands.command(pass_context = True)
-    async def help(self, ctx, typ = "short"):
+    async def volume(self, ctx : commands.Context, *, volume: int):
+        if not ctx.voice_state.is_playing:
+            return await ctx.send('Nothing is being played.')
+
+        if 0 > volume > 100:
+            return await ctx.send("Volume must be between 0 and 100. Nice try though")
+        
+        ctx.voice_state.volume = volume / 100
+        await ctx.send("Volume set to {}%".format(volume))
+
+    @commands.command(pass_context = True, aliases = ['now'])
+    async def current(self, ctx : commands.Context):
+        current_song = ctx.voice_state.current
+        embed = discord.Embed()
+        embed.title = current_song.title
+        embed.url = current_song.url
+        embed.color = 3553598
+        embed.set_thumbnail(url = current_song.thumbnail)
+        embed.set_author(name = "Added to Queue", icon_url = current_song.requester.avatar_url)
+        embed.add_field(inline = True, name = "Channel", value = current_song.uploader)
+        embed.add_field(inline = True, name = "Duration", value = current_song.duration)
+        
+        await ctx.send(embed = embed)
+
+    @commands.command(pass_context = True, aliases = ['ps'])
+    async def pause(self, ctx : commands.Context):
+        if not ctx.voice_state.is_playing and ctx.voice_state.voice.is_playing():
+            ctx.voice_state.voice.pause()
+            await ctx.message.add_reaction("⏯")
+
+    @commands.command(pass_context = True, aliases = ['continue'])
+    async def resume(self, ctx : commands.Context):
+        if not ctx.voice_state.is_playing and ctx.voice_state.voice.is_paused():
+            ctx.voice_state.voice.resume()
+            await ctx.message.add_reaction("⏯")
+
+    @commands.command(pass_context = True)
+    async def stop(self, ctx : commands.Context):
+        ctx.voice_state.songs.clear()
+
+        if not ctx.voice_state.is_playing:
+            ctx.voice_state.voice.stop()
+            await ctx.message.add_reaction("⏹")
+
+    @commands.command(pass_context = True, aliases = ['s'])
+    async def skip(self, ctx : commands.Context):
+        if not ctx.voice_state.is_playing:
+            return await ctx.send("Nothing is playing.")
+
+        voter = ctx.message.author
+        if voter == ctx.voice_state.current.requester:
+            await ctx.send("Skipping...")
+            ctx.voice_state.skip()
+        
+        elif voter.id not in ctx.voice_state.skip_votes:
+            ctx.voice_state.skip_votes.add(voter.id)
+            total_votes = len(ctx.voice_state.skip_votes)
+
+            if total_votes >= 3: # figure out how i want the minimum number of votes to scale with number of people
+                await ctx.send(f"{voter.name} wants to rock the vote! Need {3 - len(ctx.voice_state.skip_votes)} left to skip the song.")
+
+        else:
+            await ctx.send("You have already voted to skip this song.")
+
+    @commands.command(pass_context = True, aliases = ['q'])
+    async def queue(self, ctx : commands.Context, *, page : int = 1):
+        if len(ctx.voice_state.songs) == 0:
+            return await ctx.send("Queue is empty!")
+
+        items_per_page = 10
+        pages = math.ceil(len(ctx.voice_state.songs) / items_per_page)
+        start = (page - 1) * items_per_page
+        end = start + items_per_page
+
+        queue = ''
+        for i, song in enumerate(ctx.voice_state.songs[start: end], start = start):
+            queue += '`{0}.` [**{1.source.title}**]({1.source.url})\n'.format(i + 1, song)
+
+        embed = (discord.Embed(description=f'**{len(ctx.voice_state.songs)} tracks:\n\n{queue}')).set_footer(text=f"Viewing page {page}/{pages}")
+        await ctx.send(embed = embed)
+
+    @commands.command(pass_context = True)
+    async def shuffle(self, ctx : commands.Context):
+        if len(ctx.voice_state.songs) == 0:
+            return await ctx.send("Queue is empty!")
+
+        ctx.voice_state.songs.shuffle()
+        await ctx.send("Shuffling queue...")
+    
+    @commands.command(pass_context = True, aliases = ['delete', 'rm'])
+    async def remove(self, ctx : commands.Context, index : int):
+        if len(ctx.voice_state.songs) == 0:
+            return await ctx.send("Queue is empty!")
+
+        songname = ctx.voice_state.songs[index - 1].name
+        ctx.voice_state.songs.remove(index - 1)
+        await ctx.send(f"Removed {songname}.")
+
+    @commands.command(pass_context = True, aliases = ['l'])
+    async def loop(self, ctx: commands.Context):
+        if not ctx.voice_state.is_playing:
+            return await ctx.send("Nothing is playing.")
+
+        ctx.voice_state.loop = not ctx.voice_state.loop
+        await ctx.message.add_reaction("✅")
+
+    @commands.command(pass_context = True, aliases = ['p'])
+    async def play(self, ctx : commands.Context, * , search : str):
+        if not ctx.voice_state.voice:
+            await ctx.invoke(self.join)
+
+        async with ctx.typing():
+            try:
+                source = await YTDLSource.create_source(ctx, search, loop = self.client.loop)
+            except YTDLSource.YTDLError as e:
+                await ctx.send(f"An error: {e}. Let shokie#0104 know!")
+            else:
+                song = Song(source)
+                await ctx.voice_state.songs.put(song)
+                await ctx.send(f"Queued up {str(source)}!")
+
+    @join.before_invoke
+    @play.before_invoke
+    async def sanity_check(self, ctx : commands.Context):
+        if not ctx.author.voice or not ctx.author.voice.channel:
+            raise commands.CommandError("You are not connected to any voice channel.")
+        if ctx.voice_client:
+            if ctx.voice_client.channel != ctx.author.voice.channel:
+                raise commands.CommandError("I'm already in another voice channel.")
+
+    @commands.command(pass_context = True, aliases = ['h'])
+    async def help(self, ctx):
         embed = discord.Embed(colour=discord.Colour(0xb175ff), url="https://discordapp.com", description="This is the command help text for shokie-bot.")
         embed.set_thumbnail(url="https://pbs.twimg.com/profile_images/1436261093861732376/9HV4KPtC_400x400.jpg")
         embed.set_author(name="Help for shokie-bot")
@@ -343,24 +197,13 @@ class MusicBot(commands.Cog):
         embed.add_field(name="1. Join/Summon", value="Joins the Bot to the specified channel\nUsage: `$join` or `$summon`", inline=False)
         embed.add_field(name="2. Leave/Disconnect", value="Disconnects bot from the connected channel\nUsage: `$leave` or `$disconnect`", inline=False)
         embed.add_field(name="3. Play", value="Plays the specified song or adds it to queue as required\nBoth song names and youtube urls are supported\nUsage: `$play <songname/url>` or `$p <songname/url>`", inline=False)
-        embed.add_field(name="4. Now Playing", value="Shows the now playing song's information\nUsage: `$nowplaying` or `$np`", inline=False)
+        embed.add_field(name="4. Now Playing", value="Shows the now playing song's information\nUsage: `$now` or `$current`", inline=False)
         embed.add_field(name="5. Pause", value="Pauses the current song\nUsage: `$pause` or `$ps`", inline=False)
         embed.add_field(name="6. Resume", value="Resumes the paused song\nUsage: `$resume` or `$continue`", inline=False)
-        embed.add_field(name="7. Repeat", value="Repeats the currently playing song\nUsage: `$repeat` or `$r`", inline=False)
+        embed.add_field(name="7. Loop", value="Repeats the currently playing song\nUsage: `$loop` or `$l`", inline=False)
         embed.add_field(name="8. Skip", value="Skips the currently playing song, if any\nUsage: `$skip` or `$s`", inline=False)
         embed.add_field(name="9. Queue", value="Shows the currently playing queue\nUsage: `$queue` or `$q`", inline=False)
-
-        if typ != "short" and typ != "small":
-            embed.add_field(name="10. Remove", value="Removes and pops out a song at specified index in the queue\nUsage: `$remove <index>` or `$rm <index>`", inline=False)
-            embed.add_field(name="11. Seek", value="Seeks current player to a specific time within the song's duration\nUsage: `$seek <timestamp>` or `$sk <timestamp>`, where `timestamp = hh:mm:ss or mm:ss`", inline=False)
-            embed.add_field(name="12. Show NP Looped", value="Shows the now playing song every time a song changes\nA toogle switch to on/off this feature\nIt is a saved data for each server\nUsage: `$shownplooped` or `$snploop`", inline=False)
-            embed.add_field(name="13. Add Favourite", value="Adds the current song or a song at a queue-index to the user's favourites\nIf no index is given, the current song is added\nUsage: `$addfav [queue-index]` or `$afav [queue-index]`", inline=False)
-            embed.add_field(name="14. Show Favourites", value="Direct messages the saved favourites data of you\nUsage: `$showfav` or `$sfav`", inline=False)
-            embed.add_field(name="15. Remove Favourite", value="Removes an indexed-favourite\nRefer to index shown before `sfav` message for index\nUsage: `$removefav <fav-index>` or `$rfav <fav-index>`", inline=False)
-            embed.add_field(name="16. Play from Favourite", value="Plays or adds to queue the indexed favourite song\nUsage: `$playfav <fav-index>` or `$pfav <fav-index>`", inline=False)
-            embed.add_field(name="17. Dedicate", value="Dedicates a song to someone also listening to the same queue in the same voice channel as the author who wants to dedicate\nUse only in the bot's private message as dedications are a secret\nThe person dedicated to will be informed when the dedicated song starts playing\nUsage: `$dedicate <songname>` or `$d <songname>`", inline=False)
-            embed.add_field(name="18. Lyrics", value="Shows lyrics for the currently playing song or a song specifically asked for\nCan give wrong results oftentimes as this is under development\nUsage: `$lyrics [songname]` or `$l [songname]`", inline=False)
-
+        embed.add_field(name="10. Remove", value="Removes and pops out a song at specified index in the queue\nUsage: `$remove <index>` or `$rm <index>` or `$delete <index>`", inline=False)
         await ctx.send(embed = embed)
 
 def setup(client):

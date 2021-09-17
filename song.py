@@ -1,19 +1,32 @@
+import YTDLSource
+import time
+
 class Song:
-    """
-    Holds everything you need about a song
-    """
+    __slots__ = ('source')
 
-    def __init__(self, songname, requester, songinfo):
-        """
-        Params:
-        songname - name of song
-        requester - ctx.author
-        """
-        self.songname = songname
-        self.requester = requester
-        self.songinfo = songinfo
-        self.dedicatedto = None
-        self.dedicationinfo = None
+    def __init__(self, source: YTDLSource):
+        self.source = source
 
-    def get_song_url(self):
-        return self.songinfo['webpage_url']
+    @property
+    def title(self):
+        return self.source.title
+    
+    @property
+    def url(self):
+        return self.source.url
+    
+    @property
+    def thumbnail(self):
+        return self.source.thumbnail
+    
+    @property
+    def requester(self):
+        return self.source.requester
+    
+    @property
+    def uploader(self):
+        return self.source.uploader
+
+    @property
+    def duration(self):
+        return self.source.duration
