@@ -1,45 +1,19 @@
+import discord
 import YTDLSource
 
 class Song:
-    __slots__ = ('source')
-
-    """
-    Holds info for a valid query performed by YTDLSource.py.
-    Asserted that the query was valid, otherwise a Song object would never
-    be instantiated.
-
-    Attributes:
-        title: Name of the song
-        url: Link to the song of format 'https://www.youtube.com/watch?v=%s' % (VId) where VId is the ID of the song on YouTube
-        thumbnail: Thumbnail.
-        requester: The discord.context.message.author who queried for the song.
-        uploader: Person who uploaded the video onto YouTube
-        duration: Length of the song represented by format {}h{}m{}s
-    """
+    __slots__ = ('source', 'requester')
 
     def __init__(self, source: YTDLSource):
         self.source = source
-
-    @property
-    def title(self):
-        return self.source.title
+        self.requester = source.requester
     
-    @property
-    def url(self):
-        return self.source.url
-    
-    @property
-    def thumbnail(self):
-        return self.source.thumbnail
-    
-    @property
-    def requester(self):
-        return self.source.requester
-    
-    @property
-    def uploader(self):
-        return self.source.uploader
-
-    @property
-    def duration(self):
-        return self.source.duration
+    def create_embed(self):
+        embed = (discord.Embed(title='Now playing', description='```css\n{0.source.title}\n```'.format(self), color=discord.Color.blurple())
+                .add_field(name='Duration', value=self.source.duration)
+                .add_field(name='Requested by', value=self.requester.mention)
+                .add_field(name='Uploader', value='[{0.source.uploader}]({0.source.uploader_url})'.format(self))
+                .add_field(name='URL', value='[Click]({0.source.url})'.format(self))
+                .set_thumbnail(url=self.source.thumbnail)
+                .set_author(name=self.requester.name, icon_url=self.requester.avatar_url))
+        return embed

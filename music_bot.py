@@ -1,3 +1,4 @@
+import asyncio
 import math
 
 import discord
@@ -9,14 +10,16 @@ from VoiceState import VoiceState
 from song import Song
 
 class MusicBot(commands.Cog):
+
     def __init__(self, client : commands.Bot):
         self.client = client
         self.voice_states = {}
+
         self.client.remove_command('help')
 
-    def get_voice_state(self, ctx : commands.Context):
+    def get_voice_state(self, ctx: commands.Context):
         state = self.voice_states.get(ctx.guild.id)
-        if not state:
+        if not state or not state.exists:
             state = VoiceState(self.client, ctx)
             self.voice_states[ctx.guild.id] = state
 
@@ -26,19 +29,21 @@ class MusicBot(commands.Cog):
         for state in self.voice_states.values():
             self.client.loop.create_task(state.stop())
 
-    def cog_check(self, ctx : commands.Context):
+    def cog_check(self, ctx: commands.Context):
         if not ctx.guild:
-            raise commands.NoPrivateMessage("This command can\'t be used in DMs.")
+            raise commands.NoPrivateMessage('This command can\'t be used in DM channels.')
+
         return True
 
-    async def cog_before_invoke(self, ctx : commands.Context):
+    async def cog_before_invoke(self, ctx: commands.Context):
         ctx.voice_state = self.get_voice_state(ctx)
 
-    async def cog_command_error(self, ctx : commands.Context, error : commands.CommandError):
-        await ctx.send("An error occurred: {}.".format(str(error)))
+    async def cog_command_error(self, ctx: commands.Context, error: commands.CommandError):
+        await ctx.send('An error occurred: {}'.format(str(error)))
 
-    @commands.command(pass_context = True, aliases = ['summon'])
+    @commands.command(pass_context = True, invoke_without_subcommand=True)
     async def join(self, ctx: commands.Context):
+        """Joins a voice channel."""
         destination = ctx.author.voice.channel
         if ctx.voice_state.voice:
             await ctx.voice_state.voice.move_to(destination)
@@ -53,7 +58,6 @@ class MusicBot(commands.Cog):
 
         await ctx.voice_state.stop()
         del self.voice_states[ctx.guild.id]
-        await ctx.send("Later, losers.")
 
     @commands.command(pass_context = True)
     async def volume(self, ctx : commands.Context, *, volume: int):
@@ -69,16 +73,8 @@ class MusicBot(commands.Cog):
     @commands.command(pass_context = True, aliases = ['now'])
     async def current(self, ctx : commands.Context):
         if ctx.voice_state.is_playing:
-            current_song = ctx.voice_state.current
-            embed = discord.Embed()
-            embed.title = current_song.title
-            embed.url = current_song.url
-            embed.color = 3553598
-            embed.set_thumbnail(url = current_song.thumbnail)
-            embed.set_author(name = "Currently Playing", icon_url = current_song.requester.avatar_url)
-            embed.add_field(inline = True, name = "Channel", value = current_song.uploader)
-            embed.add_field(inline = True, name = "Duration", value = current_song.duration)
-            await ctx.send(embed = embed)
+            embed = ctx.voice_state.current.create_embed()
+            await ctx.send(embed=embed)
         else:
             await ctx.send("Nothing is playing!")
 
@@ -87,12 +83,12 @@ class MusicBot(commands.Cog):
         if ctx.voice_state.is_playing and ctx.voice_state.voice.is_playing():
             ctx.voice_state.voice.pause()
             await ctx.message.add_reaction('⏯')
+
     @commands.command(pass_context = True, aliases = ['continue'])
     async def resume(self, ctx : commands.Context):
         if ctx.voice_state.is_playing and ctx.voice_state.voice.is_paused():
             ctx.voice_state.voice.resume()
             await ctx.message.add_reaction('⏯')
-
 
     @commands.command(pass_context = True)
     async def stop(self, ctx : commands.Context):
@@ -105,13 +101,13 @@ class MusicBot(commands.Cog):
     @commands.command(pass_context = True, aliases = ['s'])
     async def skip(self, ctx : commands.Context):
         if not ctx.voice_state.is_playing:
-            return await ctx.send("Nothing is playing.")
+            return await ctx.send('Not playing any music right now...')
 
         voter = ctx.message.author
         if voter == ctx.voice_state.current.requester:
-            await ctx.send("Skipping...")
+            await ctx.message.add_reaction('⏭')
             ctx.voice_state.skip()
-        
+
         elif voter.id not in ctx.voice_state.skip_votes:
             ctx.voice_state.skip_votes.add(voter.id)
             total_votes = len(ctx.voice_state.skip_votes)
@@ -120,46 +116,45 @@ class MusicBot(commands.Cog):
                 await ctx.message.add_reaction('⏭')
                 ctx.voice_state.skip()
             else:
-                await ctx.send(f"{voter.name} wants to rock the vote! Need {3 - len(ctx.voice_state.skip_votes)} left to skip the song.")
+                await ctx.send('Skip vote added, currently at **{}/3**'.format(total_votes))
 
         else:
-            await ctx.send("You have already voted to skip this song.")
+            await ctx.send('You have already voted to skip this song.')
 
     @commands.command(pass_context = True, aliases = ['q'])
     async def queue(self, ctx : commands.Context, *, page : int = 1):
-        if ctx.voice_state.is_playing:
-            return await ctx.send(f"The only song in the queue is the current song: {ctx.voice_state.current.title}")
         if len(ctx.voice_state.songs) == 0:
-            return await ctx.send("Queue is empty!")
+            return await ctx.send('Empty queue.')
 
         items_per_page = 10
         pages = math.ceil(len(ctx.voice_state.songs) / items_per_page)
+
         start = (page - 1) * items_per_page
         end = start + items_per_page
 
         queue = ''
-        for i, song in enumerate(ctx.voice_state.songs[start: end], start = start):
+        for i, song in enumerate(ctx.voice_state.songs[start:end], start=start):
             queue += '`{0}.` [**{1.source.title}**]({1.source.url})\n'.format(i + 1, song)
 
-        embed = (discord.Embed(description=f'**{len(ctx.voice_state.songs)} tracks:\n\n{queue}')).set_footer(text=f"Viewing page {page}/{pages}")
-        await ctx.send(embed = embed)
+        embed = (discord.Embed(description='**{} tracks:**\n\n{}'.format(len(ctx.voice_state.songs), queue))
+                 .set_footer(text='Viewing page {}/{}'.format(page, pages)))
+        await ctx.send(embed=embed)
 
     @commands.command(pass_context = True)
     async def shuffle(self, ctx : commands.Context):
         if len(ctx.voice_state.songs) == 0:
-            return await ctx.send("Queue is empty!")
+            return await ctx.send('Empty queue.')
 
         ctx.voice_state.songs.shuffle()
-        await ctx.send("Shuffling queue...")
+        await ctx.message.add_reaction('✅')
     
     @commands.command(pass_context = True, aliases = ['delete', 'rm'])
     async def remove(self, ctx : commands.Context, index : int):
         if len(ctx.voice_state.songs) == 0:
-            return await ctx.send("Queue is empty!")
+            return await ctx.send('Empty queue.')
 
-        songname = ctx.voice_state.songs[index - 1].name
         ctx.voice_state.songs.remove(index - 1)
-        await ctx.send(f"Removed {songname}.")
+        await ctx.message.add_reaction('✅')
 
     @commands.command(pass_context = True, aliases = ['l'])
     async def loop(self, ctx: commands.Context):
@@ -170,8 +165,15 @@ class MusicBot(commands.Cog):
         ctx.voice_state.loop = not ctx.voice_state.loop
         await ctx.message.add_reaction('✅')
 
-    @commands.command(pass_context = True, aliases = ['p'])
-    async def play(self, ctx : commands.Context, * , search : str):
+    @commands.command(pass_context = True, aliases=['p'])
+    async def play(self, ctx: commands.Context, *, search: str):
+        """Plays a song.
+        If there are songs in the queue, this will be queued until the
+        other songs finished playing.
+        This command automatically searches from various sites if no URL is provided.
+        A list of these sites can be found here: https://rg3.github.io/youtube-dl/supportedsites.html
+        """
+
         async with ctx.typing():
             try:
                 source = await YTDLSource.create_source(ctx, search, loop=self.client.loop)
@@ -189,16 +191,16 @@ class MusicBot(commands.Cog):
     async def search(self, ctx : commands.Context, *, search : str):
         async with ctx.typing():
             try:
-                source = await YTDLSource.search_source(self.client, ctx, search, loop=self.client.loop)
+                source = await YTDLSource.search_source(ctx, search, loop=self.client.loop)
             except YTDLError as e:
                 await ctx.send('An error occurred while processing this request: {}'.format(str(e)))
             else:
                 if source == 'sel_invalid':
-                    await ctx.send('Invalid selection.')
+                    await ctx.send('Invalid selection')
                 elif source == 'cancel':
                     await ctx.send(':white_check_mark:')
                 elif source == 'timeout':
-                    await ctx.send(':alarm_clock: **Time\'s up!**')
+                    await ctx.send(':alarm_clock: **Time\'s up bud**')
                 else:
                     if not ctx.voice_state.voice:
                         await ctx.invoke(self.join)
@@ -211,10 +213,11 @@ class MusicBot(commands.Cog):
     @play.before_invoke
     async def sanity_check(self, ctx : commands.Context):
         if not ctx.author.voice or not ctx.author.voice.channel:
-            raise commands.CommandError("You are not connected to any voice channel.")
+            raise commands.CommandError('You are not connected to any voice channel.')
+
         if ctx.voice_client:
             if ctx.voice_client.channel != ctx.author.voice.channel:
-                raise commands.CommandError("I'm already in another voice channel.")
+                raise commands.CommandError('Bot is already in a voice channel.')
 
     @commands.command(pass_context = True, aliases = ['h'])
     async def help(self, ctx):

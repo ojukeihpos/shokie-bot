@@ -3,6 +3,9 @@ import itertools
 import random
 
 class SongQueue(asyncio.Queue):
+    """
+    Holds Song objects to simulate a playlist.
+    """
     def __getitem__(self, item):
         if isinstance(item, slice):
             return list(itertools.islice(self._queue, item.start, item.stop, item.step))
