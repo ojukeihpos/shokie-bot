@@ -191,7 +191,7 @@ class MusicBot(commands.Cog):
     async def search(self, ctx : commands.Context, *, search : str):
         async with ctx.typing():
             try:
-                source = await YTDLSource.search_source(ctx, search, loop=self.client.loop)
+                source = await YTDLSource.search_source(self.client, ctx, search, loop=self.client.loop)
             except YTDLError as e:
                 await ctx.send('An error occurred while processing this request: {}'.format(str(e)))
             else:
