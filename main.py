@@ -2,14 +2,12 @@ import os
 
 from discord.ext import commands
 from dotenv import load_dotenv
-from discord_slash import SlashCommand
 
 startup_extensions = ["music_bot"]
 
 
 bot = commands.Bot(command_prefix=commands.when_mentioned_or("$"),
                    description="shokie-bot ver. alpha")
-slash = SlashCommand(bot, sync_commands = True)
 
 if __name__ == '__main__':
     for extension in startup_extensions:
